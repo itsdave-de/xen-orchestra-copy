@@ -41,34 +41,11 @@ def create_database():
               source_path TEXT,
               destination_path TEXT,
               hash_md5 TEXT,
-              encryption_key TEXT,
               timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     conn.commit()
     conn.close()
-
-
-def generate_key():
-    return Fernet.generate_key()
-
-
-def encrypt_file(file_path, key, chunk_size=4096):
-    cipher_suite = Fernet(key)
-    with open(file_path, 'rb') as file:
-        while True:
-            chunk = file.read(chunk_size)
-            if len(chunk) == 0:
-                break
-            encrypted_chunk = cipher_suite.encrypt(chunk)
-            yield encrypted_chunk
-
-
-def decrypt_file(encrypted_data, key):
-    cipher_suite = Fernet(key)
-    decrypted_data = cipher_suite.decrypt(encrypted_data)
-    return decrypted_data
-
 
 def get_api_info():
     # Creates an SSH connection
@@ -118,7 +95,6 @@ def get_api_info():
                 conn.commit()
         conn.close()
 
-
 def calculate_md5(file_path):
     """
     Calculates the MD5 hash of a file.
@@ -135,8 +111,7 @@ def calculate_md5(file_path):
             hash_md5.update(chunk)
     return hash_md5.hexdigest()
 
-
-def log_backup(jobid, filename, source_path, destination_path, hash_md5, encryption_key):
+def log_backup(jobid, filename, source_path, destination_path, hash_md5):
     """
     Logs a backup operation to a SQLite database.
 
@@ -146,14 +121,13 @@ def log_backup(jobid, filename, source_path, destination_path, hash_md5, encrypt
         source_path (str): The path to the file being backed up.
         destination_path (str): The path to the backup destination.
         hash_md5 (str): The MD5 hash of the file being backed up.
-        encryption_key (str): The encryption key used to encrypt the file.
     """
     conn = sqlite3.connect(database_file)
     c = conn.cursor()
     c.execute('''
-        INSERT INTO backup_log (filename, source_path, destination_path, hash_md5, encryption_key)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (jobid, filename, source_path, destination_path, hash_md5, encryption_key))
+        INSERT INTO backup_log (filename, source_path, destination_path, hash_md5)
+        VALUES (?, ?, ?, ?)
+    ''', (jobid, filename, source_path, destination_path, hash_md5))
     conn.commit()
     conn.close()
 
@@ -165,7 +139,7 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
     :param source_directory: Path of the source directory containing the backups.
     :param destination_directory: Path of the destination directory (e.g., USB drive).
     :param jobid: The jobid of the backup job to copy.
-    :param show_progress: If True, shows the progress bar during copy/encryption.
+    :param show_progress: If True, shows the progress bar during copy.
     """
     
     # Verify if the destination directory exists
@@ -217,7 +191,6 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
                     row = c.fetchone()
                     
                     if row is None:
-                        encryption_key = generate_key()
                         total_size = os.path.getsize(image_filepath)
                         # Create directory if not exists on destination
                         os.makedirs(os.path.join(destination_directory, os.path.dirname(vhd)), exist_ok=True)
@@ -227,40 +200,38 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
                                     total=total_size,
                                     unit='B',
                                     unit_scale=True,
-                                    desc=f'Copying and Encrypting ({os.path.basename(vhd)})'
+                                    desc=f'Copying ({os.path.basename(vhd)})'
                                 ) as pbar:
-                                    for encrypted_chunk in encrypt_file(image_filepath, encryption_key):
-                                        file.write(encrypted_chunk)
-                                        pbar.update(len(encrypted_chunk))
+                                    with open(image_filepath, 'rb') as source_file:
+                                        while True:
+                                            chunk = source_file.read(4096)
+                                            if not chunk:
+                                                break
+                                            file.write(chunk)
+                                            pbar.update(len(chunk))
                             else:
-                                for encrypted_chunk in encrypt_file(image_filepath, encryption_key):
-                                    file.write(encrypted_chunk)
+                                shutil.copyfile(image_filepath, destination_image_filepath)
                         hash_md5 = calculate_md5(image_filepath)
                         log_backup(
                             jobid,
                             os.path.basename(vhd),
                             os.path.join(image_filepath, os.path.dirname(vhd)),
                             destination_image_filepath,
-                            hash_md5,
-                            encryption_key
+                            hash_md5
                         )
                         print(f'Copy Image backup: {os.path.basename(vhd)} -> {destination_image_filepath}')
                     else:
                         # Verify if the file has been modified
                         current_hash_md5 = calculate_md5(image_filepath)
                         if current_hash_md5 != row[3]:
-                            encryption_key = generate_key()
-                            encrypted_data = encrypt_file(image_filepath, encryption_key)
-                            with open(destination_image_filepath, 'wb') as file:
-                                file.write(encrypted_data)
+                            shutil.copyfile(image_filepath, destination_image_filepath)
                             
                             log_backup(
                                 jobid,
                                 os.path.basename(vhd),
                                 os.path.join(image_filepath, os.path.dirname(vhd)),
                                 destination_image_filepath,
-                                hash_md5,
-                                encryption_key
+                                hash_md5
                             )
                             print(f'Backup Image file {os.path.basename(vhd)} -> {destination_image_filepath} has been modified.')
                         else:
@@ -276,8 +247,8 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
     return True
 
 # Parse arguments
-parser = argparse.ArgumentParser(description='Copies encrypted backups.')
-parser.add_argument('--progress', action='store_true', help='Shows the progress bar during copy/encryption.')
+parser = argparse.ArgumentParser(description='Copies backups.')
+parser.add_argument('--progress', action='store_true', help='Shows the progress bar during copy.')
 args = parser.parse_args()
 
 # Main function
@@ -311,4 +282,3 @@ if __name__ == '__main__':
             ''', (row[0],))
             conn.commit()
             conn.close()
-
