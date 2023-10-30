@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import subprocess
 from datetime import datetime
 import paramiko
 import sqlite3
@@ -10,6 +11,7 @@ import hashlib
 import argparse
 from cryptography.fernet import Fernet
 from tqdm import tqdm
+import pexpect
 
 database_file = 'backup_copy.db' # Path to the database file
 
@@ -20,6 +22,11 @@ key_filename = './ssh/id_rsa'   # SSH private key
 
 xo_username = 'admin@admin.net' # XO username (admin)
 xo_password = 'xxxxxxxxx'       # XO password
+
+# Gocryptfs password
+CRYPT_PASSWORD = 'xxxxxxxxxxxxxxxxxxxxx'
+CRYPT_SOURCE = '/volumeUSB1/usbshare/backup'
+CRYPT_MOUNTPOINT = '/tmp/crypto'
 
 def create_database():
     conn = sqlite3.connect(database_file)
@@ -132,6 +139,42 @@ def calculate_md5(file_path, show_progress=False):
     return hash_md5.hexdigest()
 
 
+def mount_gocryptfs(source, target, password):
+    """
+    Mounts a directory encrypted with gocryptfs.
+
+    Args:
+        source (str): The path to the encrypted directory.
+        target (str): The path to the mount point.
+        password (str): The password to decrypt the directory.
+    """
+    command = f"/volume1/backup/scripts/bin/gocryptfs {source} {target}"
+    child = pexpect.spawn(command)
+    child.expect("Password:")
+    child.sendline(password)
+    child.expect(pexpect.EOF)
+    output = child.before.decode("utf-8")
+    if "Filesystem mounted and ready." in output:
+        print("Filesystem mounted and ready.")
+    else:
+        raise Exception("Error mounting filesystem")
+
+
+def unmount_gocryptfs(target):
+    """
+    Unmounts a directory encrypted with gocryptfs.
+
+    Args:
+        target (str): The path to the mount point.
+    """
+    command = ['/bin/umount', target]
+    try:
+        subprocess.run(command, check=True)
+        print("Filesystem unmounted successfully.")
+    except subprocess.CalledProcessError:
+        print("Error unmounting filesystem")
+
+
 def log_backup(jobid, filename, source_path, destination_path, hash_md5):
     """
     Logs a backup operation to a SQLite database.
@@ -146,7 +189,7 @@ def log_backup(jobid, filename, source_path, destination_path, hash_md5):
     conn = sqlite3.connect(database_file)
     c = conn.cursor()
     c.execute('''
-        INSERT INTO backup_log (filename, source_path, destination_path, hash_md5)
+        INSERT INTO backup_log (jobid, filename, source_path, destination_path, hash_md5)
         VALUES (?, ?, ?, ?, ?)
     ''', (jobid, filename, source_path, destination_path, hash_md5))
     conn.commit()
@@ -165,8 +208,8 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
     
     # Verify if the destination directory exists
     if not os.path.exists(destination_directory):
-        print(f'Directory {destination_directory} does not exist.')
-        return False
+        print(f'Directory {destination_directory} does not exist. Create it first.')
+        os.makedirs(destination_directory, exist_ok=True)
     
     # Find the .json file that corresponds to the jobid
     json_array_filename = []
@@ -189,7 +232,7 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
         json_filepath = os.path.join(*json_filename)
         with open(json_filepath, 'r') as file:
             content = json.load(file)
-            
+            # Verify if the backup is delta type
             if 'mode' in content and content['mode'] == 'delta':
                 # Deternine if the image is FULL or Incremental
                 if not content['vdis'][list(
@@ -217,10 +260,12 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
                         
                         if row is None:
                             total_size = os.path.getsize(image_filepath)
+                            # First mount the encrypted directory
+                            mount_gocryptfs(CRYPT_SOURCE, destination_directory, CRYPT_PASSWORD)
                             # Create directory if not exists on destination
                             os.makedirs(os.path.join(destination_directory, os.path.dirname(vhd)), exist_ok=True)
-                            with open(destination_image_filepath, 'wb') as file:
-                                if show_progress:
+                            if show_progress:
+                                with open(destination_image_filepath, 'wb') as file:
                                     with tqdm(
                                         total=total_size,
                                         unit='B',
@@ -234,8 +279,8 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
                                                     break
                                                 file.write(chunk)
                                                 pbar.update(len(chunk))
-                                else:
-                                    shutil.copyfile(image_filepath, destination_image_filepath)
+                            else:
+                                shutil.copyfile(image_filepath, destination_image_filepath)
                             hash_md5 = calculate_md5(image_filepath, show_progress)
                             log_backup(
                                 jobid,
@@ -244,13 +289,32 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
                                 destination_image_filepath,
                                 hash_md5
                             )
+                            # Unmount the encrypted directory
+                            unmount_gocryptfs(destination_directory)
                             print(f'Copy Image backup: {os.path.basename(vhd)} -> {destination_image_filepath}')
                         else:
                             # Verify if the file has been modified
                             current_hash_md5 = calculate_md5(image_filepath)
                             if current_hash_md5 != row[3]:
-                                shutil.copyfile(image_filepath, destination_image_filepath)
-                                
+                                # First mount the encrypted directory
+                                mount_gocryptfs(CRYPT_SOURCE, destination_directory, CRYPT_PASSWORD)
+                                if show_progress:
+                                    with open(destination_image_filepath, 'wb') as file:
+                                        with tqdm(
+                                            total=total_size,
+                                            unit='B',
+                                            unit_scale=True,
+                                            desc=f'Copying ({os.path.basename(vhd)})'
+                                        ) as pbar:
+                                            with open(image_filepath, 'rb') as source_file:
+                                                while True:
+                                                    chunk = source_file.read(4096)
+                                                    if not chunk:
+                                                        break
+                                                    file.write(chunk)
+                                                    pbar.update(len(chunk))
+                                else:
+                                    shutil.copyfile(image_filepath, destination_image_filepath)
                                 log_backup(
                                     jobid,
                                     os.path.basename(vhd),
@@ -258,6 +322,8 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
                                     destination_image_filepath,
                                     hash_md5
                                 )
+                                # Unmount the encrypted directory
+                                unmount_gocryptfs(destination_directory)
                                 print(f'Backup Image file {os.path.basename(vhd)} -> {destination_image_filepath} has been modified.')
                             else:
                                 print(f'Backup Image file {os.path.basename(vhd)} -> {destination_image_filepath} already exists and is up to date.')
@@ -292,7 +358,7 @@ if __name__ == '__main__':
     for row in rows:
         if copy_delta_backups(
             '/volume1/backup/xo-vm-backups',
-            '/volumeUSB1/usbshare/backup',
+            CRYPT_MOUNTPOINT,
             row[1],
             args.progress
         ):
