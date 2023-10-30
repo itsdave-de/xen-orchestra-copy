@@ -227,8 +227,7 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
     # For each json file, find the image file associated with the full backup
     for json_filename in json_array_filename:
         # Read the json file content
-        json_filepath = os.path.join(*json_filename)
-        with open(json_filepath, 'r') as file:
+        with open(os.path.join(*json_filename), 'r') as file:
             content = json.load(file)
             # Verify if the backup is delta type
             if 'mode' in content and content['mode'] == 'delta':
@@ -312,6 +311,8 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
                                                     pbar.update(len(chunk))
                                 else:
                                     shutil.copyfile(image_filepath, destination_image_filepath)
+                                # Calculate the new MD5 hash
+                                hash_md5 = calculate_md5(image_filepath, show_progress)
                                 log_backup(
                                     jobid,
                                     os.path.basename(vhd),
