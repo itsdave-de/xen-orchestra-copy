@@ -9,21 +9,21 @@ import paramiko
 import sqlite3
 import hashlib
 import argparse
-from cryptography.fernet import Fernet
 from tqdm import tqdm
 import pexpect
 
+# SQLite database settings
 database_file = 'backup_copy.db' # Path to the database file
 
-# SSH connection settings
+# XO Server SSH connection settings
 host = '192.168.1.10'           # IP address of the XO server
 username = 'username'           # SSH username
 key_filename = './ssh/id_rsa'   # SSH private key
-
+# XO credentials
 xo_username = 'admin@admin.net' # XO username (admin)
 xo_password = 'xxxxxxxxx'       # XO password
 
-# Gocryptfs password
+# Gocryptfs settings
 CRYPT_PASSWORD = 'xxxxxxxxxxxxxxxxxxxxx'
 CRYPT_SOURCE = '/volumeUSB1/usbshare/backup'
 CRYPT_MOUNTPOINT = '/tmp/crypto'
@@ -55,35 +55,35 @@ def create_database():
     conn.commit()
     conn.close()
 
+
 def get_api_info():
+    """
+    Gets the backup information from the XO server and stores it in a SQLite database.
+    """
     # Creates an SSH connection
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     ssh.connect(host, username=username, key_filename=key_filename)
-
-    stdin, stdout, stderr = ssh.exec_command(f'/opt/xen-orchestra/node_modules/.bin/xo-cli --register http://localhost "{xo_username}" "{xo_password}"')
+    # Register XO CLI
+    _, stdout, _ = ssh.exec_command(f'/opt/xen-orchestra/node_modules/.bin/xo-cli --register http://localhost "{xo_username}" "{xo_password}"')
     stdout.channel.recv_exit_status()
-
-    # Executes the external command and redirects the output to the temporary file
+    # Get backups from XO CLI and export to output as JSON
     command = f'/opt/xen-orchestra/node_modules/.bin/xo-cli backupNg.getAllLogs --json'
-    stdin, stdout, stderr = ssh.exec_command(command)
+    _, stdout, _ = ssh.exec_command(command)
     stdout.channel.recv_exit_status()
-
+    # Reads the output and converts it to a JSON object
     backups = json.loads(stdout.read().decode().strip())
-
-    stdin, stdout, stderr = ssh.exec_command('/opt/xen-orchestra/node_modules/.bin/xo-cli --unregister')
+    # Unregister XO CLI
+    _, stdout, _ = ssh.exec_command('/opt/xen-orchestra/node_modules/.bin/xo-cli --unregister')
     stdout.channel.recv_exit_status()
-
     # Closes the SSH connection
     ssh.close()
-
     # Get backups from today with mode delta and status success
     backups_today = [backups[i] for i in backups.keys() if (
         (backups[i]['data']['mode'] == 'delta') and (
             datetime.fromtimestamp(backups[i]['start'] // 1000).date() == datetime.today().date()
         ) and (backups[i]['status'] == 'success')
     )]
-
     # Add registry on database
     if backups_today:
         conn = sqlite3.connect(database_file)
@@ -103,6 +103,7 @@ def get_api_info():
                 conn.commit()
         conn.close()
 
+
 def calculate_md5(file_path, show_progress=False):
     """
     Calculates the MD5 hash of a file.
@@ -116,7 +117,7 @@ def calculate_md5(file_path, show_progress=False):
     """
     hash_md5 = hashlib.md5()
     file_size = os.path.getsize(file_path)
-    
+    # Read the file in chunks to avoid memory issues
     with open(file_path, 'rb') as f:
         if show_progress:
             progress = tqdm(
@@ -195,7 +196,7 @@ def log_backup(jobid, filename, source_path, destination_path, hash_md5):
     conn.commit()
     conn.close()
 
-# Copy delta mode backups function
+
 def copy_delta_backups(source_directory, destination_directory, jobid, show_progress=False):
     """
     Copy delta mode backups from source_directory to destination_directory.
@@ -205,12 +206,10 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
     :param jobid: The jobid of the backup job to copy.
     :param show_progress: If True, shows the progress bar during copy.
     """
-    
     # Verify if the destination directory exists
     if not os.path.exists(destination_directory):
         print(f'Directory {destination_directory} does not exist. Create it first.')
         os.makedirs(destination_directory, exist_ok=True)
-    
     # Find the .json file that corresponds to the jobid
     json_array_filename = []
     for root, dirs, files in os.walk(source_directory):
@@ -221,11 +220,10 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
                     content = json.load(file)
                     if 'jobId' in content and content['jobId'] == jobid:
                         json_array_filename.append((os.path.dirname(filepath), filename))
-    
+    # Verify if the json file exists
     if json_array_filename is []:
         print(f'File .json for jobid {jobid} not found.')
         return False
-    
     # For each json file, find the image file associated with the full backup
     for json_filename in json_array_filename:
         # Read the json file content
@@ -242,7 +240,6 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
                     for vhd in content.get('vhds', {}).values():
                         image_filepath = os.path.join(json_filename[0], vhd)
                         destination_image_filepath = os.path.join(destination_directory, vhd)
-                        
                         # Verify if the file has already been copied
                         conn = sqlite3.connect(database_file)
                         c = conn.cursor()
@@ -257,7 +254,7 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
                             )
                         )
                         row = c.fetchone()
-                        
+                        # If the file has not been copied, copy it
                         if row is None:
                             total_size = os.path.getsize(image_filepath)
                             # First mount the encrypted directory
@@ -327,10 +324,8 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
                                 print(f'Backup Image file {os.path.basename(vhd)} -> {destination_image_filepath} has been modified.')
                             else:
                                 print(f'Backup Image file {os.path.basename(vhd)} -> {destination_image_filepath} already exists and is up to date.')
-
                         # Close the database connection
                         conn.close()
-
             else:
                 print(f'The backup for jobid {jobid} is not delta type.')
     # always return True
