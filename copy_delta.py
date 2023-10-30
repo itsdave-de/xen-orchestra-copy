@@ -85,7 +85,7 @@ def get_api_info():
             c = conn.cursor()
             c.execute('''
             SELECT * FROM api
-                WHERE jobid = ? AND jobname = ?
+                WHERE jobid = ? AND jobname = ? AND DATE(timestamp) = DATE('now', 'localtime')
             ''', (entry['jobId'], entry['jobName']))
             if c.fetchone() is None:
                 c = conn.cursor()
@@ -96,21 +96,41 @@ def get_api_info():
                 conn.commit()
         conn.close()
 
-def calculate_md5(file_path):
+def calculate_md5(file_path, show_progress=False):
     """
     Calculates the MD5 hash of a file.
 
     Args:
         file_path (str): The path to the file to hash.
+        show_progress (bool): Whether to show the progress bar or not.
 
     Returns:
         str: The MD5 hash of the file.
     """
     hash_md5 = hashlib.md5()
+    file_size = os.path.getsize(file_path)
+    
     with open(file_path, 'rb') as f:
-        for chunk in iter(lambda: f.read(4096), b''):
+        if show_progress:
+            progress = tqdm(
+                total=file_size,
+                unit='B',
+                unit_scale=True,
+                desc=f'Calculating MD5 ({os.path.basename(file_path)})'
+            )
+        else:
+            progress = iter([])
+        while True:
+            chunk = f.read(4096)
+            if not chunk:
+                break
             hash_md5.update(chunk)
+            for _ in progress:
+                progress.update(len(chunk))
+        if show_progress:
+            progress.close()
     return hash_md5.hexdigest()
+
 
 def log_backup(jobid, filename, source_path, destination_path, hash_md5):
     """
@@ -127,7 +147,7 @@ def log_backup(jobid, filename, source_path, destination_path, hash_md5):
     c = conn.cursor()
     c.execute('''
         INSERT INTO backup_log (filename, source_path, destination_path, hash_md5)
-        VALUES (?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?)
     ''', (jobid, filename, source_path, destination_path, hash_md5))
     conn.commit()
     conn.close()
@@ -216,7 +236,7 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
                                                 pbar.update(len(chunk))
                                 else:
                                     shutil.copyfile(image_filepath, destination_image_filepath)
-                            hash_md5 = calculate_md5(image_filepath)
+                            hash_md5 = calculate_md5(image_filepath, show_progress)
                             log_backup(
                                 jobid,
                                 os.path.basename(vhd),
