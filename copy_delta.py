@@ -119,13 +119,13 @@ def calculate_md5(file_path, show_progress=False):
                 desc=f'Calculating MD5 ({os.path.basename(file_path)})'
             )
         else:
-            progress = iter([])
+            progress = None
         while True:
             chunk = f.read(4096)
             if not chunk:
                 break
             hash_md5.update(chunk)
-            for _ in progress:
+            if progress is not None:
                 progress.update(len(chunk))
         if show_progress:
             progress.close()
