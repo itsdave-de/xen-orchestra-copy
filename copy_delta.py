@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 from datetime import datetime
 import paramiko
 import sqlite3
@@ -170,62 +171,52 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
             content = json.load(file)
             
             if 'mode' in content and content['mode'] == 'delta':
-                # find the image file associated with the delta backup
-                for vhd in content.get('vhds', {}).values():
-                    image_filepath = os.path.join(json_filename[0], vhd)
-                    destination_image_filepath = os.path.join(destination_directory, vhd)
-                    
-                    # Verify if the file has already been copied
-                    conn = sqlite3.connect(database_file)
-                    c = conn.cursor()
-                    c.execute('''
-                        SELECT * FROM backup_log
-                        WHERE jobid = ? AND filename = ? AND source_path = ? AND destination_path = ?
-                    ''', (
-                            jobid,
-                            os.path.basename(vhd),
-                            os.path.join(image_filepath, os.path.dirname(vhd)),
-                            destination_image_filepath
+                # Deternine if the image is FULL or Incremental
+                if not content['vdis'][list(
+                    content['vdis'].keys()
+                )[0]].get('other_config', {}):
+                    # find the image file associated with the delta backup
+                    for vhd in content.get('vhds', {}).values():
+                        image_filepath = os.path.join(json_filename[0], vhd)
+                        destination_image_filepath = os.path.join(destination_directory, vhd)
+                        
+                        # Verify if the file has already been copied
+                        conn = sqlite3.connect(database_file)
+                        c = conn.cursor()
+                        c.execute('''
+                            SELECT * FROM backup_log
+                            WHERE jobid = ? AND filename = ? AND source_path = ? AND destination_path = ?
+                        ''', (
+                                jobid,
+                                os.path.basename(vhd),
+                                os.path.join(image_filepath, os.path.dirname(vhd)),
+                                destination_image_filepath
+                            )
                         )
-                    )
-                    row = c.fetchone()
-                    
-                    if row is None:
-                        total_size = os.path.getsize(image_filepath)
-                        # Create directory if not exists on destination
-                        os.makedirs(os.path.join(destination_directory, os.path.dirname(vhd)), exist_ok=True)
-                        with open(destination_image_filepath, 'wb') as file:
-                            if show_progress:
-                                with tqdm(
-                                    total=total_size,
-                                    unit='B',
-                                    unit_scale=True,
-                                    desc=f'Copying ({os.path.basename(vhd)})'
-                                ) as pbar:
-                                    with open(image_filepath, 'rb') as source_file:
-                                        while True:
-                                            chunk = source_file.read(4096)
-                                            if not chunk:
-                                                break
-                                            file.write(chunk)
-                                            pbar.update(len(chunk))
-                            else:
-                                shutil.copyfile(image_filepath, destination_image_filepath)
-                        hash_md5 = calculate_md5(image_filepath)
-                        log_backup(
-                            jobid,
-                            os.path.basename(vhd),
-                            os.path.join(image_filepath, os.path.dirname(vhd)),
-                            destination_image_filepath,
-                            hash_md5
-                        )
-                        print(f'Copy Image backup: {os.path.basename(vhd)} -> {destination_image_filepath}')
-                    else:
-                        # Verify if the file has been modified
-                        current_hash_md5 = calculate_md5(image_filepath)
-                        if current_hash_md5 != row[3]:
-                            shutil.copyfile(image_filepath, destination_image_filepath)
-                            
+                        row = c.fetchone()
+                        
+                        if row is None:
+                            total_size = os.path.getsize(image_filepath)
+                            # Create directory if not exists on destination
+                            os.makedirs(os.path.join(destination_directory, os.path.dirname(vhd)), exist_ok=True)
+                            with open(destination_image_filepath, 'wb') as file:
+                                if show_progress:
+                                    with tqdm(
+                                        total=total_size,
+                                        unit='B',
+                                        unit_scale=True,
+                                        desc=f'Copying ({os.path.basename(vhd)})'
+                                    ) as pbar:
+                                        with open(image_filepath, 'rb') as source_file:
+                                            while True:
+                                                chunk = source_file.read(4096)
+                                                if not chunk:
+                                                    break
+                                                file.write(chunk)
+                                                pbar.update(len(chunk))
+                                else:
+                                    shutil.copyfile(image_filepath, destination_image_filepath)
+                            hash_md5 = calculate_md5(image_filepath)
                             log_backup(
                                 jobid,
                                 os.path.basename(vhd),
@@ -233,14 +224,27 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
                                 destination_image_filepath,
                                 hash_md5
                             )
-                            print(f'Backup Image file {os.path.basename(vhd)} -> {destination_image_filepath} has been modified.')
+                            print(f'Copy Image backup: {os.path.basename(vhd)} -> {destination_image_filepath}')
                         else:
-                            print(f'Backup Image file {os.path.basename(vhd)} -> {destination_image_filepath} already exists and is up to date.')
+                            # Verify if the file has been modified
+                            current_hash_md5 = calculate_md5(image_filepath)
+                            if current_hash_md5 != row[3]:
+                                shutil.copyfile(image_filepath, destination_image_filepath)
+                                
+                                log_backup(
+                                    jobid,
+                                    os.path.basename(vhd),
+                                    os.path.join(image_filepath, os.path.dirname(vhd)),
+                                    destination_image_filepath,
+                                    hash_md5
+                                )
+                                print(f'Backup Image file {os.path.basename(vhd)} -> {destination_image_filepath} has been modified.')
+                            else:
+                                print(f'Backup Image file {os.path.basename(vhd)} -> {destination_image_filepath} already exists and is up to date.')
 
-                    # Close the database connection
-                    conn.close()
-                else:
-                    print(f'File backup Image not found for jobid {jobid}')
+                        # Close the database connection
+                        conn.close()
+
             else:
                 print(f'The backup for jobid {jobid} is not delta type.')
     # always return True
