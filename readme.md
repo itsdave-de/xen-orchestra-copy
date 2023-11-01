@@ -17,10 +17,66 @@ This Python script automates the process of copying backups from a Xen Orchestra
 
 1. Update the following settings according to your environment:
 
-    - SQLite database settings
-    - XO Server SSH connection settings ([need to generate SSH keys](ssh.md))
-    - XO credentials
-    - `gocryptfs` settings
+The `copy_delta.py` script requires the setup of some constant variables at the beginning of the code. These variables are used to define settings for the SQLite database, authorized devices, SSH connection settings, and encryption settings.
+
+#### SQLite Database Configuration
+
+The `database_file` variable defines the path to the SQLite database file.
+
+```python
+database_file = 'backup_copy.db'
+```
+
+#### Authorized Devices Configuration
+
+The `AUTHORIZED_DEVICES` list contains the serial numbers of USB devices authorized to receive backup copies.
+
+```python
+AUTHORIZED_DEVICES = [
+    '0000000000000a',  # Disk number 001
+    '0000000000000b'   # Disk number 002
+]
+```
+
+#### SSH Connection Configuration to the XO Server
+
+The following variables are used to define the SSH connection settings to the XO server.
+
+- `host`: The IP address of the XO server.
+- `username`: The SSH username.
+- `key_filename`: The path to the SSH private key file.
+
+```python
+host = '192.168.1.10'
+username = 'username'
+key_filename = './ssh/id_rsa'
+```
+
+#### XO Credentials
+
+The following variables are used to store the XO admin credentials.
+
+- `xo_username`: The XO admin username.
+- `xo_password`: The XO admin password.
+
+```python
+xo_username = 'admin@admin.net'
+xo_password = 'xxxxxxxxx'
+```
+
+#### Gocryptfs Settings
+
+The following variables are used to define the Gocryptfs encryption settings.
+
+- `GOCRYPTFS_PATH`: The path to the Gocryptfs executable.
+- `CRYPT_PASSWORD`: The password to decrypt the directory.
+- `CRYPT_MOUNTPOINT`: The point of mount of the encrypted directory.
+
+```python
+GOCRYPTFS_PATH = '/volume1/backup/scripts/bin/gocryptfs'
+CRYPT_PASSWORD = 'xxxxxxxxxxxxxxxxxxxxx'
+CRYPT_MOUNTPOINT = '/tmp/crypto'
+```
 
 2. Install the required Python packages:
 
