@@ -122,6 +122,7 @@ def get_usb_mountpoint(usb_device):
         mountpoint = '/tmp/usb'
         os.makedirs(mountpoint, exist_ok=True)
         subprocess.run(['/bin/mount', usb_device, mountpoint], check=True)
+    print(f'USB device {usb_device} mounted to {mountpoint}.')
     return mountpoint
 
 
