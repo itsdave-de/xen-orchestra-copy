@@ -365,7 +365,7 @@ def copy_delta_backups(source_directory, destination_directory, usb_device, jobi
                                 print(f'Not enough space on {usb_sourcedir}. Need {total_size} bytes, disk has {psutil.disk_usage(usb_sourcedir).free} bytes.')
                                 return False
                             # Second mount the encrypted directory
-                            mount_gocryptfs(usb_sourcedir), destination_directory, CRYPT_PASSWORD)
+                            mount_gocryptfs(usb_sourcedir, destination_directory, CRYPT_PASSWORD)
                             # Create directory if not exists on destination
                             os.makedirs(os.path.join(destination_directory, os.path.dirname(vhd)), exist_ok=True)
                             if show_progress:
