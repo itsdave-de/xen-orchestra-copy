@@ -2,6 +2,4 @@
 
 #### How to generate you keys
 
-```sh
-ssh-keygen -t rsa -o ./ssh/
-```
+[SSH Keygen](../ssh.md)
