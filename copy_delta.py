@@ -2,18 +2,26 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from datetime import datetime
+from sys import exit
 import paramiko
 import sqlite3
 import hashlib
 import argparse
 from tqdm import tqdm
 import pexpect
+import psutil
 
 # SQLite database settings
 database_file = 'backup_copy.db' # Path to the database file
+
+# Devices authorized to copy backups
+AUTHORIZED_DEVICES = [
+    '0000' # Serial number of the USB drive
+]
 
 # XO Server SSH connection settings
 host = '192.168.1.10'           # IP address of the XO server
@@ -24,8 +32,8 @@ xo_username = 'admin@admin.net' # XO username (admin)
 xo_password = 'xxxxxxxxx'       # XO password
 
 # Gocryptfs settings
+GOCRYPTFS_PATH = '/volume1/backup/scripts/bin/gocryptfs'
 CRYPT_PASSWORD = 'xxxxxxxxxxxxxxxxxxxxx'
-CRYPT_SOURCE = '/volumeUSB1/usbshare/backup'
 CRYPT_MOUNTPOINT = '/tmp/crypto'
 
 def create_database():
@@ -54,6 +62,131 @@ def create_database():
     ''')
     conn.commit()
     conn.close()
+
+
+def usb_devices_authorized():
+    """
+    Returns the path of an authorized USB device connected to the system.
+    The function checks all devices in the '/dev' directory that match the pattern 'sd[a-z]+$', and uses the 'udevadm'
+    command to check if the device is USB and get its serial number. If the serial number is authorized, the function
+    returns the path of the device with a partition number of 1 (e.g. '/dev/sdq1').
+
+    Returns:
+        str: The path of an authorized USB device with a partition number of 1, or None if no authorized device is found.
+    """
+    # Use the module 'os' to list the devices in the '/dev' directory
+    devices = [d for d in os.listdir('/dev') if re.match(r'sd[a-z]+$', d)]
+    return_device = None
+    # For each device, use the 'udevadm' command to check if it is USB and get the serial
+    for dev in devices:
+        result = subprocess.run(
+            ['udevadm', 'info', '--query=all', '--name=/dev/' + dev],
+            capture_output=True,
+            text=True
+        )
+        info = result.stdout
+        # Check if the device is USB
+        if 'SYNO_DEV_DISKPORTTYPE=USB' in info:
+            serial = None
+            for line in info.splitlines():
+                # Get the serial number
+                if 'SYNO_ATTR_SERIAL=' in line:
+                    serial = line.split('=')[1]
+                    break
+            # Check if the serial number is authorized
+            if serial in AUTHORIZED_DEVICES:
+                return_device = f'/dev/{dev}1'
+    return return_device
+
+
+def get_usb_mountpoint(usb_device):
+    """
+    Returns the mountpoint of a USB device, given its device path.
+
+    If the USB device is not already mounted, it will be mounted to '/tmp/usb'.
+
+    Args:
+        usb_device (str): The device path of the USB device.
+
+    Returns:
+        str: The mountpoint of the USB device.
+    """
+    # Verify if the USB device is mounted with psutil
+    mountpoint = None
+    for part in psutil.disk_partitions():
+        if part.device == usb_device:
+            mountpoint = part.mountpoint
+            break
+    if mountpoint is None:
+        # if not mounted, mount it
+        mountpoint = '/tmp/usb'
+        os.makedirs(mountpoint, exist_ok=True)
+        subprocess.run(['/bin/mount', usb_device, mountpoint], check=True)
+    return mountpoint
+
+
+def umount_usb(usb_device):
+    """
+    Unmounts a USB device if it is currently mounted.
+
+    Args:
+        usb_device (str): The path to the USB device.
+
+    Raises:
+        subprocess.CalledProcessError: If the unmount command fails.
+
+    Returns:
+        None
+    """
+    # Verify if the USB device is mounted with psutil
+    mountpoint = None
+    for part in psutil.disk_partitions():
+        if part.device == usb_device:
+            mountpoint = part.mountpoint
+            break
+    if mountpoint is not None:
+        # if mounted, unmount it
+        subprocess.run(['/bin/umount', mountpoint], check=True)
+        print(f'USB device {usb_device} unmounted.')
+
+
+def mount_gocryptfs(source, target, password):
+    """
+    Mounts a directory encrypted with gocryptfs.
+
+    Args:
+        source (str): The path to the encrypted directory.
+        target (str): The path to the mount point.
+        password (str): The password to decrypt the directory.
+    """
+    if not os.path.exists(GOCRYPTFS_PATH):
+        print(f"ERROR: File {GOCRYPTFS_PATH} does not exist.")
+        exit(1)
+    command = f"{GOCRYPTFS_PATH} {source} {target}"
+    child = pexpect.spawn(command)
+    child.expect("Password:")
+    child.sendline(password)
+    child.expect(pexpect.EOF)
+    output = child.before.decode("utf-8")
+    if "Filesystem mounted and ready." in output:
+        print(f"Filesystem {target} mounted and ready.")
+    else:
+        raise Exception("Error mounting filesystem")
+
+
+def unmount_gocryptfs(target):
+    """
+    Unmounts a directory encrypted with gocryptfs.
+
+    Args:
+        target (str): The path to the mount point.
+    """
+    command = ['/bin/umount', target]
+    try:
+        subprocess.run(command, check=True)
+        print(f"Filesystem encrypted {target} unmounted.")
+    except subprocess.CalledProcessError:
+        print(f"Error unmounting filesystem {target}.")
 
 
 def get_api_info():
@@ -140,42 +273,6 @@ def calculate_md5(file_path, show_progress=False):
     return hash_md5.hexdigest()
 
 
-def mount_gocryptfs(source, target, password):
-    """
-    Mounts a directory encrypted with gocryptfs.
-
-    Args:
-        source (str): The path to the encrypted directory.
-        target (str): The path to the mount point.
-        password (str): The password to decrypt the directory.
-    """
-    command = f"/volume1/backup/scripts/bin/gocryptfs {source} {target}"
-    child = pexpect.spawn(command)
-    child.expect("Password:")
-    child.sendline(password)
-    child.expect(pexpect.EOF)
-    output = child.before.decode("utf-8")
-    if "Filesystem mounted and ready." in output:
-        print("Filesystem mounted and ready.")
-    else:
-        raise Exception("Error mounting filesystem")
-
-
-def unmount_gocryptfs(target):
-    """
-    Unmounts a directory encrypted with gocryptfs.
-
-    Args:
-        target (str): The path to the mount point.
-    """
-    command = ['/bin/umount', target]
-    try:
-        subprocess.run(command, check=True)
-        print("Filesystem unmounted successfully.")
-    except subprocess.CalledProcessError:
-        print("Error unmounting filesystem")
-
-
 def log_backup(jobid, filename, source_path, destination_path, hash_md5):
     """
     Logs a backup operation to a SQLite database.
@@ -197,12 +294,13 @@ def log_backup(jobid, filename, source_path, destination_path, hash_md5):
     conn.close()
 
 
-def copy_delta_backups(source_directory, destination_directory, jobid, show_progress=False):
+def copy_delta_backups(source_directory, destination_directory, usb_device, jobid, show_progress=False):
     """
     Copy delta mode backups from source_directory to destination_directory.
     
     :param source_directory: Path of the source directory containing the backups.
-    :param destination_directory: Path of the destination directory (e.g., USB drive).
+    :param destination_directory: Path of the destination directory.
+    :param usb_device: Path of the USB device.
     :param jobid: The jobid of the backup job to copy.
     :param show_progress: If True, shows the progress bar during copy.
     """
@@ -256,8 +354,18 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
                         # If the file has not been copied, copy it
                         if row is None:
                             total_size = os.path.getsize(image_filepath)
-                            # First mount the encrypted directory
-                            mount_gocryptfs(CRYPT_SOURCE, destination_directory, CRYPT_PASSWORD)
+                            # first mount usb drive
+                            usb_sourcedir = os.path.join(
+                                get_usb_mountpoint(usb_device),
+                                'backup'
+                            )
+                            os.makedirs(usb_sourcedir, exist_ok=True)
+                            # Verify if disk have enough space
+                            if psutil.disk_usage(usb_sourcedir).free < total_size:
+                                print(f'Not enough space on {usb_sourcedir}. Need {total_size} bytes, disk has {psutil.disk_usage(usb_sourcedir).free} bytes.')
+                                return False
+                            # Second mount the encrypted directory
+                            mount_gocryptfs(usb_sourcedir, destination_directory, CRYPT_PASSWORD)
                             # Create directory if not exists on destination
                             os.makedirs(os.path.join(destination_directory, os.path.dirname(vhd)), exist_ok=True)
                             if show_progress:
@@ -287,12 +395,24 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
                             )
                             # Unmount the encrypted directory
                             unmount_gocryptfs(destination_directory)
+                            # umount usb drive
+                            umount_usb(usb_device)
                             print(f'Copy Image backup: {os.path.basename(vhd)} -> {destination_image_filepath}')
                         else:
                             # Verify if the file has been modified
                             current_hash_md5 = calculate_md5(image_filepath)
                             if current_hash_md5 != row[3]:
-                                # First mount the encrypted directory
+                                # first mount usb drive
+                                usb_sourcedir = os.path.join(
+                                    get_usb_mountpoint(usb_device),
+                                    'backup'
+                                )
+                                os.makedirs(usb_sourcedir, exist_ok=True)
+                                # Verify if disk have enough space
+                                if psutil.disk_usage(usb_sourcedir).free < total_size:
+                                    print(f'Not enough space on {usb_sourcedir}. Need {total_size} bytes, disk has {psutil.disk_usage(usb_sourcedir).free} bytes.')
+                                    return False
+                                # Second mount the encrypted directory
                                 mount_gocryptfs(CRYPT_SOURCE, destination_directory, CRYPT_PASSWORD)
                                 if show_progress:
                                     with open(destination_image_filepath, 'wb') as file:
@@ -322,6 +442,8 @@ def copy_delta_backups(source_directory, destination_directory, jobid, show_prog
                                 )
                                 # Unmount the encrypted directory
                                 unmount_gocryptfs(destination_directory)
+                                # Umount usb drive
+                                umount_usb(usb_device)
                                 print(f'Backup Image file {os.path.basename(vhd)} -> {destination_image_filepath} has been modified.')
                             else:
                                 print(f'Backup Image file {os.path.basename(vhd)} -> {destination_image_filepath} already exists and is up to date.')
@@ -352,9 +474,15 @@ if __name__ == '__main__':
     conn.close()
     # Copy all backups
     for row in rows:
+        # Verify if device authorized is connected
+        usb_device = usb_devices_authorized()
+        if usb_device is None:
+            print('No authorized USB device connected.')
+            exit(1)
         if copy_delta_backups(
             '/volume1/backup/xo-vm-backups',
             CRYPT_MOUNTPOINT,
+            usb_device,
             row[1],
             args.progress
         ):

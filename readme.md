@@ -8,6 +8,7 @@ This Python script automates the process of copying backups from a Xen Orchestra
 - Paramiko for SSH connection
 - SQLite3 for database operations
 - TQDM for progress bars
+- PSUtil for manage usb disks
 - Pexpect for interacting with `gocryptfs`
 - [`gocryptfs`](https://github.com/rfjakob/gocryptfs/tree/master) for encrypted backups
 
@@ -24,7 +25,7 @@ This Python script automates the process of copying backups from a Xen Orchestra
 2. Install the required Python packages:
 
     ```
-    sudo pip3 install paramiko tqdm pexpect
+    sudo pip3 install paramiko tqdm pexpect psutil
     ```
 
 3. Run the script with the following command:
