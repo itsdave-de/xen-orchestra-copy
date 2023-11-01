@@ -92,10 +92,10 @@ def usb_devices_authorized():
                 # Get the serial number
                 if 'SYNO_ATTR_SERIAL=' in line:
                     serial = line.split('=')[1]
-                    break
             # Check if the serial number is authorized
             if serial in AUTHORIZED_DEVICES:
                 return_device = f'/dev/{dev}1'
+                break
     return return_device
 
 
